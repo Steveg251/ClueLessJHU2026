@@ -300,6 +300,27 @@ async def handle_client(websocket):
             player = game.get_player(player_id)
             if player:
                 print(f"[SERVER] {player.name} disconnected.")
+                if not game.started:
+                    await leave_lobby(player)
+
+
+async def leave_lobby(player):
+    """Before the game starts, a player who disconnects gives up their slot and character."""
+    was_host = player is game.players[0]
+    game.players.remove(player)
+
+    # the next player in line becomes host, and the host always plays Miss Scarlet
+    if was_host and game.players:
+        new_host = game.players[0]
+        new_host.character = "Miss Scarlet"
+        await send_to(new_host.player_id, "WELCOME", {
+            "playerId": new_host.player_id,
+            "name": new_host.name,
+            "character": new_host.character,
+            "host": True,
+        })
+
+    await send_lobby_update()
 
 
 async def main():

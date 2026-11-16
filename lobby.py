@@ -5,9 +5,13 @@
 # server.py prints the exact command to use when it starts
 import sys
 import tkinter as tk
+from tkinter import ttk
 
+import rules
 from network_client import NetworkClient
 from board import ClueGameGUI
+
+HOST_CHARACTER = "Miss Scarlet"  # the server always gives the host Miss Scarlet
 
 MAX_PLAYERS = 6
 BG = "#1e1e2e"
@@ -20,10 +24,10 @@ SERVER_URI = "ws://" + SERVER_IP + ":8765"
 
 root = tk.Tk()
 root.title("Clue-Less - " + PLAYER_NAME)
-root.geometry("400x600")
+root.geometry("420x680")
 root.configure(bg=BG)
 
-players = []  # names of players currently in the lobby
+players = []  # players currently in the lobby: dicts with playerId, name, character (host first)
 client = None  # connection to the server, created when entering the lobby
 my_id = None  # id the server gave this player
 my_cards = []  # this player's hand, sent by the server when the game starts
@@ -39,13 +43,56 @@ def show_frame(frame):
     frame.pack(fill="both", expand=True)
 
 # ---------- Lobby logic ----------
+def find_me():
+    for player in players:
+        if player["playerId"] == my_id:
+            return player
+    return None
+
 def refresh_lobby():
     for i, slot in enumerate(slot_labels):
         if i < len(players):
-            slot.config(text=players[i], fg="#a6e3a1")
+            player = players[i]
+            text = player["name"]
+            if i == 0:
+                text += " (Host)"
+            if player["playerId"] == my_id:
+                text += " (You)"
+            text += " - " + (player["character"] or "choosing...")
+            slot.config(text=text, fg="#a6e3a1" if player["character"] else "#f9e2af")
         else:
             slot.config(text="Waiting for player...", fg="#6c7086")
     count_label.config(text=f"Players: {len(players)}/{MAX_PLAYERS}")
+    refresh_character_picker()
+
+def refresh_character_picker():
+    """Offer only the characters nobody else has taken; the host is locked to Miss Scarlet."""
+    me = find_me()
+    if me is None:
+        character_picker.set("")
+        character_picker.config(values=[], state="disabled")
+        picker_hint.config(text="")
+        return
+
+    if players[0] is me:
+        character_picker.config(values=[HOST_CHARACTER], state="disabled")
+        character_picker.set(HOST_CHARACTER)
+        picker_hint.config(text="The host always plays Miss Scarlet.")
+        return
+
+    taken = {player["character"] for player in players if player is not me}
+    available = [c for c in rules.CHARACTERS if c != HOST_CHARACTER and c not in taken]
+    character_picker.config(values=available, state="readonly")
+    character_picker.set(me["character"] or "")
+    picker_hint.config(text="" if me["character"] else "Pick a character before the host starts.")
+
+def choose_character(_event=None):
+    me = find_me()
+    choice = character_picker.get()
+    if client is None or me is None or not choice or choice == me["character"]:
+        return
+    client.send("SELECT_CHARACTER", character=choice)
+    show_status("Choosing " + choice + "...")
 
 def show_status(text):
     status_label.config(text=text)
@@ -64,15 +111,20 @@ def handle_server_message(message):
 
     if message_type == "LOBBY_UPDATE":
         # the first player in the list is the host
-        players[:] = [player["name"] + (" (Host)" if i == 0 else "")
-                      for i, player in enumerate(data["players"])]
+        players[:] = data["players"]
         refresh_lobby()
+        me = find_me()
+        if me is not None and me["character"]:
+            show_status("You are " + me["character"])
     elif message_type == "WELCOME":
         my_id = data["playerId"]
         show_status("Joined as " + data["name"] + (" (Host)" if data["host"] else ""))
+        refresh_lobby()
     elif message_type == "ERROR":
         print("Server error:", data["message"])
         show_status("Server error: " + data["message"])
+        # e.g. someone else grabbed that character first: show what we really have
+        refresh_character_picker()
     elif message_type == "HAND":
         # sent just before GAME_STARTED; kept until the board exists
         my_cards[:] = data["cards"]
@@ -93,7 +145,8 @@ def poll_network():
     root.after(100, poll_network)
 
 def enter_lobby():
-    global client
+    global client, my_id
+    my_id = None
     players.clear()
     refresh_lobby()
     show_status("Connecting...")
@@ -127,10 +180,20 @@ count_label.pack(pady=(0, 15))
 
 slot_labels = []
 for _ in range(MAX_PLAYERS):
-    lbl = tk.Label(lobby_frame, font=("Arial", 14), width=25,
+    lbl = tk.Label(lobby_frame, font=("Arial", 13), width=34,
                    bg="#313244", pady=6)
     lbl.pack(pady=3)
     slot_labels.append(lbl)
+
+picker_row = tk.Frame(lobby_frame, bg=BG)
+picker_row.pack(pady=(15, 0))
+tk.Label(picker_row, text="Your character:", font=("Arial", 12),
+         fg="white", bg=BG).grid(row=0, column=0, padx=5)
+character_picker = ttk.Combobox(picker_row, width=16, state="disabled")
+character_picker.grid(row=0, column=1, padx=5)
+character_picker.bind("<<ComboboxSelected>>", choose_character)
+picker_hint = tk.Label(lobby_frame, font=("Arial", 11), fg="#6c7086", bg=BG)
+picker_hint.pack()
 
 button_row = tk.Frame(lobby_frame, bg=BG)
 button_row.pack(pady=20)
