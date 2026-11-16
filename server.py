@@ -267,18 +267,35 @@ async def accusation(player_id, data):
         return
 
     if rules.accusation_is_correct(game.case_file, suspect, weapon, room):
-        await broadcast("GAME_WON", {
-            "playerId": player_id,
-            "name": player.name,
-        })
-    else:
-        player.eliminated = True
-        await broadcast("PLAYER_ELIMINATED", {
-            "playerId": player_id,
-            "name": player.name,
-        })
-        # an eliminated player can't finish their turn, so it passes straight on
-        await pass_turn(player)
+        await end_game(player, "accusation")
+        return
+
+    player.eliminated = True
+    await broadcast("PLAYER_ELIMINATED", {
+        "playerId": player_id,
+        "name": player.name,
+    })
+
+    # if everyone else is out, the last player left wins by default
+    remaining = game.active_players()
+    if len(remaining) == 1:
+        await end_game(remaining[0], "last_player")
+        return
+
+    # an eliminated player can't finish their turn, so it passes straight on
+    await pass_turn(player)
+
+
+async def end_game(winner, reason):
+    """reason is "accusation" (solved the case) or "last_player" (everyone else eliminated).
+    The game is over, so the case file is revealed to everyone."""
+    game.over = True
+    await broadcast("GAME_WON", {
+        "playerId": winner.player_id,
+        "name": winner.name,
+        "reason": reason,
+        "caseFile": game.case_file,
+    })
 
 
 async def end_turn(player_id):
@@ -331,8 +348,16 @@ async def process_message(websocket, raw_message):
         await websocket.send(create_message("ERROR", {"message": "Join the game first."}))
         return
 
-    # nothing else happens on the turn until the suggestion has been disproved
+    # turn actions only make sense while a game is being played
     if message_type in ("MOVE_REQUEST", "SUGGESTION", "ACCUSATION", "END_TURN"):
+        if not game.started:
+            await send_error(player_id, "The game has not started.")
+            return
+        if game.over:
+            await send_error(player_id, "The game is over.")
+            return
+
+        # nothing else happens on the turn until the suggestion has been disproved
         error = game.waiting_on_disproof_error()
         if error:
             await send_error(player_id, error)

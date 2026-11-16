@@ -115,6 +115,7 @@ class ClueGameGUI:
         self.rooms = self.build_rooms()
 
         # Turn state
+        self.game_over = False
         self.has_moved = False
         self.reachable = set()
 
@@ -182,6 +183,9 @@ class ClueGameGUI:
 
     def can_act(self):
         """True if this player may take a turn action now; otherwise logs why not."""
+        if self.game_over:
+            self.log_message("The game is over.")
+            return False
         if self.am_eliminated():
             self.log_message("You have been eliminated. You can still disprove suggestions.")
             return False
@@ -414,10 +418,18 @@ class ClueGameGUI:
         elif message_type == "GAME_WON":
             player = self.find_player(data["playerId"])
             who = self.describe(player) if player else data["name"]
-            self.log_message(f"🏆 {who} solved the case and wins!")
-            self.reachable = set()
-            self.set_highlights(set())
-            messagebox.showinfo("Game Over", f"{who} solved the case and wins!")
+            if data.get("reason") == "last_player":
+                result = f"{who} is the last player left and wins!"
+            else:
+                result = f"{who} solved the case and wins!"
+            case = data["caseFile"]
+            answer = f"It was {case['suspect']} with the {case['weapon']} in the {case['room']}."
+
+            self.game_over = True
+            self.disable_turn_controls()
+            self.log_message(f"🏆 {result}")
+            self.log_message(f"📁 {answer}")
+            messagebox.showinfo("Game Over", f"{result}\n\n{answer}")
 
         elif message_type == "DISPROVE_REQUEST":
             suggester = self.find_player(data["suggesterId"])

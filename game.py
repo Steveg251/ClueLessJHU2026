@@ -5,6 +5,7 @@ class Game:
     def __init__(self):
         self.players = []
         self.started = False
+        self.over = False  # set once someone wins; no more turns after that
         self.current_player_index = 0
         self.case_file = None
         # positions of characters no player controls; a played character's position
@@ -59,6 +60,9 @@ class Game:
             if player.character is not None:
                 locations[player.character] = player.location
         return locations
+
+    def active_players(self):
+        return [player for player in self.players if not player.eliminated]
 
     def occupied_hallways(self, exclude_player=None):
         # only players' pawns block hallways; unplayed characters never do
