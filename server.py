@@ -4,6 +4,7 @@ import websockets
 
 import rules as rules
 from game import Game
+from messages import make_message, parse_message
 from player import Player
 
 HOST = "localhost"
@@ -15,7 +16,7 @@ next_player_id = 1
 
 
 def create_message(message_type, data=None):
-    return json.dumps({"type": message_type, "data": data or {}})
+    return make_message(message_type, **(data or {}))
 
 
 async def send_to(player_id, message_type, data=None):
@@ -251,13 +252,13 @@ async def end_turn(player_id):
 
 async def process_message(websocket, raw_message):
     try:
-        message = json.loads(raw_message)
-    except json.JSONDecodeError:
-        await websocket.send(create_message("ERROR", {"message": "Invalid JSON."}))
+        message = parse_message(raw_message)
+    except (json.JSONDecodeError, ValueError) as exc:
+        await websocket.send(create_message("ERROR", {"message": f"Invalid message: {exc}"}))
         return
 
-    message_type = message.get("type")
-    data = message.get("data", {})
+    message_type = message["type"]
+    data = message["data"]
     player_id = connections.get(websocket)
 
     if message_type in ("HELLO", "JOIN_GAME"):

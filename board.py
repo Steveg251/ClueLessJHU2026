@@ -6,15 +6,15 @@ from tkinter import messagebox
 
 import rules as rules
 
-# characters are given out in the order players joined, each starting in their Clue-Less hallway
-CHARACTERS = [
-    {"character": "Miss Scarlet", "color": "#e53e3e", "location": "Hallway 2"},
-    {"character": "Col. Mustard", "color": "#dd6b20", "location": "Hallway 5"},
-    {"character": "Mrs. White", "color": "#edf2f7", "location": "Hallway 12"},
-    {"character": "Mr. Green", "color": "#38a169", "location": "Hallway 11"},
-    {"character": "Mrs. Peacock", "color": "#3182ce", "location": "Hallway 8"},
-    {"character": "Prof. Plum", "color": "#805ad5", "location": "Hallway 3"},
-]
+# pawn color for each character; characters and starting locations come from the server
+CHARACTER_COLORS = {
+    "Miss Scarlet": "#e53e3e",
+    "Col. Mustard": "#dd6b20",
+    "Mrs. White": "#edf2f7",
+    "Mr. Green": "#38a169",
+    "Mrs. Peacock": "#3182ce",
+    "Prof. Plum": "#805ad5",
+}
 
 
 class ClueGameGUI:
@@ -68,20 +68,26 @@ class ClueGameGUI:
                 for r in range(0, len(cls.MANSION_MAP), 2)
                 for c in range(0, len(cls.MANSION_MAP[0]), 2)}
 
-    def __init__(self, root, client, lobby_players, my_id):
+    def __init__(self, root, client, game_state, my_id, my_cards):
+        """game_state is the data of the server's GAME_STARTED message."""
         self.root = root
         self.client = client
         self.my_id = my_id
+        self.my_cards = my_cards
 
-        # Game State Variables (one entry per player in the game, in the order they joined)
-        self.current_turn_index = 0
+        # Game State Variables (one entry per player in the game, in turn order)
         self.players_data = []
-        for i, player in enumerate(lobby_players[:len(CHARACTERS)]):
-            info = dict(CHARACTERS[i])
-            info["name"] = player["name"]
-            info["id"] = player["id"]
-            info["active"] = True
-            self.players_data.append(info)
+        for player in game_state["players"]:
+            self.players_data.append({
+                "id": player["playerId"],
+                "name": player["name"],
+                "character": player["character"],
+                "color": CHARACTER_COLORS.get(player["character"], "#a0aec0"),
+                "location": player["location"],
+                "active": not player["eliminated"],
+            })
+        self.current_turn_index = 0
+        self.set_current_player(game_state["currentPlayerId"])
 
         me = self.find_player(my_id)
         self.root.title(f"Clue-Less - {me['name']} ({me['character']})")
@@ -140,7 +146,8 @@ class ClueGameGUI:
         # Initial layout rendering and starting msg
         self.update_character_tokens()
         self.log_message(f"Game started! You are {me['character']}.")
-        self.start_turn()
+        self.log_message("Your cards: " + (", ".join(self.my_cards) or "none"))
+        # the server's TURN_STARTED message (sent right after GAME_STARTED) begins the first turn
 
     # --- PLAYER HELPERS ---
     def find_player(self, player_id):
@@ -148,6 +155,11 @@ class ClueGameGUI:
             if player["id"] == player_id:
                 return player
         return None
+
+    def set_current_player(self, player_id):
+        player = self.find_player(player_id)
+        if player is not None:
+            self.current_turn_index = self.players_data.index(player)
 
     def current_player(self):
         return self.players_data[self.current_turn_index]
@@ -240,20 +252,6 @@ class ClueGameGUI:
         else:
             self.log_message("Your turn! You are boxed in and can't move.")
 
-    def next_turn(self, player_id):
-        """Turn passes to the next active player after the one who ended their turn
-        (every board does this when the server announces END_TURN, so all boards stay in sync)."""
-        player = self.find_player(player_id)
-        if player is not None:
-            self.current_turn_index = self.players_data.index(player)
-
-        for _ in range(len(self.players_data)):
-            self.current_turn_index = (self.current_turn_index + 1) % len(self.players_data)
-            if self.current_player()["active"]:
-                break
-
-        self.start_turn()
-
     # --- BUTTON COMMAND HOOKS (each sends a message to the server) ---
     def end_turn(self):
         if not self.is_my_turn():
@@ -311,42 +309,67 @@ class ClueGameGUI:
         self.client.send("MOVE_REQUEST", destination=space_name)
 
     # --- MESSAGES FROM THE SERVER ---
+    def apply_state(self, state):
+        """Sync every pawn with the server's public game state."""
+        for info in state["players"]:
+            player = self.find_player(info["playerId"])
+            if player is None:
+                continue
+            player["location"] = info["location"]
+            player["loc_widget"].config(text=f"Location: {player['location']}")
+            if info["eliminated"] and player["active"]:
+                player["active"] = False
+                player["name_widget"].config(fg="#a0aec0")
+        self.update_character_tokens()
+
+    def describe(self, player):
+        return f"{player['name']} ({player['character']})"
+
     def handle_message(self, message):
-        if message["type"] == "GAME_UPDATE":
-            player = self.find_player(message.get("player_id"))
+        message_type = message["type"]
+        data = message["data"]
+
+        if message_type == "GAME_UPDATE":
+            player = self.find_player(data.get("playerId"))
             if player is None:
                 return
-            who = f"{player['name']} ({player['character']})"
+            who = self.describe(player)
+            self.apply_state(data["state"])
 
-            if message["event"] == "PLAYER_MOVED":
-                player["location"] = message["destination"]
-                player["loc_widget"].config(text=f"📍 Location: {player['location']}")
-                self.update_character_tokens()
-                self.log_message(f"{who} moved to {player['location']}.")
+            if data["event"] == "CHARACTER_MOVED":
+                self.log_message(f"{who} moved from {data['from']} to {data['to']}.")
 
-            elif message["event"] == "SUGGESTION":
-                self.log_message(f"{who} made a suggestion in the {message['room']}.")
+            elif data["event"] == "SUGGESTION":
+                self.log_message(f"{who} suggests {data['suspect']} with the "
+                                 f"{data['weapon']} in the {data['room']}.")
 
-            elif message["event"] == "ACCUSATION":
-                self.log_message(f"⚠️ {who} made an accusation!")
+        elif message_type == "TURN_STARTED":
+            self.set_current_player(data["playerId"])
+            self.start_turn()
 
-            elif message["event"] == "END_TURN":
-                self.log_message(f"{who} ended their turn.")
-                self.next_turn(player["id"])
+        elif message_type == "TURN_ENDED":
+            player = self.find_player(data["playerId"])
+            if player is not None:
+                self.log_message(f"{self.describe(player)} ended their turn.")
 
-        elif message["type"] == "PLAYER_DISCONNECTED":
-            player = self.find_player(message["player_id"])
+        elif message_type == "PLAYER_ELIMINATED":
+            player = self.find_player(data["playerId"])
             if player is None:
                 return
             player["active"] = False
             player["name_widget"].config(fg="#a0aec0")
-            self.log_message(f"{player['name']} ({player['character']}) left the game.")
-            # if it was their turn, pass the turn along
-            if self.current_player() is player:
-                self.next_turn(player["id"])
+            self.log_message(f"❌ {self.describe(player)} made a wrong accusation and is eliminated.")
 
-        elif message["type"] == "ERROR":
-            self.log_message(f"Server error: {message['message']}")
+        elif message_type == "GAME_WON":
+            player = self.find_player(data["playerId"])
+            who = self.describe(player) if player else data["name"]
+            self.log_message(f"🏆 {who} solved the case and wins!")
+            self.reachable = set()
+            self.set_highlights(set())
+            messagebox.showinfo("Game Over", f"{who} solved the case and wins!")
+
+        elif message_type == "ERROR":
+            self.log_message(f"Server error: {data['message']}")
 
     def create_board(self):
         rows, cols = len(self.MANSION_MAP), len(self.MANSION_MAP[0])

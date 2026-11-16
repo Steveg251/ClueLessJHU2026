@@ -26,6 +26,7 @@ root.configure(bg=BG)
 players = []  # names of players currently in the lobby
 client = None  # connection to the server, created when entering the lobby
 my_id = None  # id the server gave this player
+my_cards = []  # this player's hand, sent by the server when the game starts
 game = None  # game board, created when the host starts the game
 
 # ---------- Frames (one per screen) ----------
@@ -58,27 +59,30 @@ def handle_server_message(message):
         game.handle_message(message)
         return
 
-    if message["type"] == "LOBBY_UPDATE":
-        players[:] = [player["name"] + (" (Host)" if player["is_host"] else "")
-                      for player in message["players"]]
+    message_type = message["type"]
+    data = message["data"]
+
+    if message_type == "LOBBY_UPDATE":
+        # the first player in the list is the host
+        players[:] = [player["name"] + (" (Host)" if i == 0 else "")
+                      for i, player in enumerate(data["players"])]
         refresh_lobby()
-    elif message["type"] == "WELCOME":
-        my_id = message["player_id"]
-        show_status("Joined as " + message["name"] + (" (Host)" if message["is_host"] else ""))
-    elif message["type"] == "PLAYER_CONNECTED":
-        show_status(message["player_name"] + " joined the lobby")
-    elif message["type"] == "PLAYER_DISCONNECTED":
-        show_status(message["player_name"] + " left the lobby")
-    elif message["type"] == "ERROR":
-        print("Server error:", message["message"])
-        show_status("Server error: " + message["message"])
-    elif message["type"] == "GAME_STARTED":
+    elif message_type == "WELCOME":
+        my_id = data["playerId"]
+        show_status("Joined as " + data["name"] + (" (Host)" if data["host"] else ""))
+    elif message_type == "ERROR":
+        print("Server error:", data["message"])
+        show_status("Server error: " + data["message"])
+    elif message_type == "HAND":
+        # sent just before GAME_STARTED; kept until the board exists
+        my_cards[:] = data["cards"]
+    elif message_type == "GAME_STARTED":
         print("The host started the game.")
         # hide the lobby and open the game board for every player
         root.withdraw()
         board_window = tk.Toplevel(root)
         board_window.protocol("WM_DELETE_WINDOW", root.destroy)
-        game = ClueGameGUI(board_window, client, message["players"], my_id)
+        game = ClueGameGUI(board_window, client, data, my_id, list(my_cards))
 
 def handle_network_status(status):
     print(status)
