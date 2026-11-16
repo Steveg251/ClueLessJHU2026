@@ -277,6 +277,8 @@ async def accusation(player_id, data):
             "playerId": player_id,
             "name": player.name,
         })
+        # an eliminated player can't finish their turn, so it passes straight on
+        await pass_turn(player)
 
 
 async def end_turn(player_id):
@@ -292,6 +294,11 @@ async def end_turn(player_id):
         await send_error(player_id, error)
         return
 
+    await pass_turn(player)
+
+
+async def pass_turn(player):
+    """Announce the end of player's turn and start the next active player's."""
     await broadcast("TURN_ENDED", {
         "playerId": player.player_id,
         "name": player.name,
@@ -329,6 +336,12 @@ async def process_message(websocket, raw_message):
         error = game.waiting_on_disproof_error()
         if error:
             await send_error(player_id, error)
+            return
+
+        # eliminated players keep only one action: disproving other players' suggestions
+        player = game.get_player(player_id)
+        if player is not None and player.eliminated:
+            await send_error(player_id, "You have been eliminated. You can still disprove suggestions.")
             return
 
     if message_type == "SELECT_CHARACTER":

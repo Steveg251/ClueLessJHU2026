@@ -177,6 +177,19 @@ class ClueGameGUI:
     def is_my_turn(self):
         return self.current_player()["id"] == self.my_id
 
+    def am_eliminated(self):
+        return not self.find_player(self.my_id)["active"]
+
+    def can_act(self):
+        """True if this player may take a turn action now; otherwise logs why not."""
+        if self.am_eliminated():
+            self.log_message("You have been eliminated. You can still disprove suggestions.")
+            return False
+        if not self.is_my_turn():
+            self.log_message("It's not your turn.")
+            return False
+        return True
+
     #Initial game setup and layout
     def create_players_panel(self):
         for player in self.players_data:
@@ -238,16 +251,23 @@ class ClueGameGUI:
         self.actions_frame.columnconfigure(0, weight=1)
         self.actions_frame.columnconfigure(1, weight=1)
 
-        suggestion_btn = ttk.Button(self.actions_frame, text="Make Suggestion",
-                                    command=self.action_make_suggestion)
-        suggestion_btn.grid(row=0, column=0, sticky="ew", padx=(0, 2), pady=2)
+        self.suggestion_btn = ttk.Button(self.actions_frame, text="Make Suggestion",
+                                         command=self.action_make_suggestion)
+        self.suggestion_btn.grid(row=0, column=0, sticky="ew", padx=(0, 2), pady=2)
 
-        accusation_btn = ttk.Button(self.actions_frame, text="Make Accusation",
-                                    command=self.action_make_accusation)
-        accusation_btn.grid(row=0, column=1, sticky="ew", padx=(2, 0), pady=2)
+        self.accusation_btn = ttk.Button(self.actions_frame, text="Make Accusation",
+                                         command=self.action_make_accusation)
+        self.accusation_btn.grid(row=0, column=1, sticky="ew", padx=(2, 0), pady=2)
 
         self.end_btn = ttk.Button(self.actions_frame, text="⏭ End Turn", command=self.end_turn)
         self.end_btn.grid(row=1, column=0, columnspan=2, sticky="ew", pady=2)
+
+    def disable_turn_controls(self):
+        """An eliminated player keeps watching (and disproving) but can't take turns."""
+        for button in (self.suggestion_btn, self.accusation_btn, self.end_btn):
+            button.state(["disabled"])
+        self.reachable = set()
+        self.set_highlights(set())
 
     # --- TURN & MOVEMENT HELPERS ---
     def legal_moves(self, player):
@@ -281,16 +301,14 @@ class ClueGameGUI:
 
     # --- BUTTON COMMAND HOOKS (each sends a message to the server) ---
     def end_turn(self):
-        if not self.is_my_turn():
-            self.log_message("It's not your turn.")
+        if not self.can_act():
             return
         self.reachable = set()
         self.set_highlights(set())
         self.client.send("END_TURN")
 
     def action_make_suggestion(self):
-        if not self.is_my_turn():
-            self.log_message("It's not your turn.")
+        if not self.can_act():
             return
         active_player = self.current_player()
         if active_player["location"] not in self.rooms:
@@ -304,8 +322,7 @@ class ClueGameGUI:
         self.client.send("SUGGESTION", room=active_player["location"], suspect=suspect, weapon=weapon) # Send the suggestion to the server
 
     def action_make_accusation(self):
-        if not self.is_my_turn():
-            self.log_message("It's not your turn.")
+        if not self.can_act():
             return
         suspect = self.picks["Suspects"].get()
         weapon = self.picks["Weapons"].get()
@@ -318,8 +335,7 @@ class ClueGameGUI:
         self.client.send("ACCUSATION", suspect=suspect, weapon=weapon, room=room)
 
     def on_space_click(self, space_name):
-        if not self.is_my_turn():
-            self.log_message("It's not your turn.")
+        if not self.can_act():
             return
         active_player = self.current_player()
         if self.has_moved:
@@ -390,6 +406,10 @@ class ClueGameGUI:
             player["active"] = False
             player["name_widget"].config(fg="#a0aec0")
             self.log_message(f"❌ {self.describe(player)} made a wrong accusation and is eliminated.")
+            if player["id"] == self.my_id:
+                self.disable_turn_controls()
+                self.log_message("You can no longer move, suggest or accuse, "
+                                 "but you must still disprove other players' suggestions.")
 
         elif message_type == "GAME_WON":
             player = self.find_player(data["playerId"])
