@@ -399,8 +399,60 @@ class ClueGameGUI:
             self.set_highlights(set())
             messagebox.showinfo("Game Over", f"{who} solved the case and wins!")
 
+        elif message_type == "DISPROVE_REQUEST":
+            suggester = self.find_player(data["suggesterId"])
+            who = self.describe(suggester) if suggester else data["suggesterName"]
+            self.log_message(f"You can disprove {who}'s suggestion. Choose a card to show them.")
+            self.ask_disprove_card(who, data)
+
+        elif message_type == "CARD_SHOWN":
+            disprover = self.find_player(data["disproverId"])
+            who = self.describe(disprover) if disprover else data["disproverName"]
+            self.log_message(f"🔍 {who} showed you: {data['card']}")
+            messagebox.showinfo("Suggestion Disproved", f"{who} showed you the card:\n\n{data['card']}")
+
+        elif message_type == "SUGGESTION_DISPROVED":
+            suggester = self.find_player(data["suggesterId"])
+            disprover = self.find_player(data["disproverId"])
+            suggester_text = f"{self.describe(suggester)}'s" if suggester else "the"
+            disprover_text = self.describe(disprover) if disprover else data["disproverName"]
+            self.log_message(f"{disprover_text} disproved {suggester_text} suggestion.")
+
+        elif message_type == "SUGGESTION_NOT_DISPROVED":
+            suggester = self.find_player(data["suggesterId"])
+            who = f"{self.describe(suggester)}'s" if suggester else "the"
+            self.log_message(f"Nobody could disprove {who} suggestion of {data['suspect']} "
+                             f"with the {data['weapon']} in the {data['room']}.")
+
         elif message_type == "ERROR":
             self.log_message(f"Server error: {data['message']}")
+
+    def ask_disprove_card(self, suggester, request):
+        """Pop-up where this player picks which matching card to show the suggester.
+        It can't be dismissed without choosing: the game waits on this answer."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Disprove the Suggestion")
+        dialog.transient(self.root)
+        dialog.protocol("WM_DELETE_WINDOW", lambda: None)
+        self.disprove_dialog = dialog
+
+        ttk.Label(dialog, padding=(15, 12, 15, 4), wraplength=320,
+                  text=f"{suggester} suggests {request['suspect']} with the {request['weapon']} "
+                       f"in the {request['room']}.").pack()
+        ttk.Label(dialog, padding=(15, 0, 15, 8),
+                  text="Choose one card to show (only they will see it):").pack()
+
+        choice = tk.StringVar(value=request["cards"][0])
+        for card in request["cards"]:
+            ttk.Radiobutton(dialog, text=card, variable=choice, value=card).pack(anchor="w", padx=30)
+
+        def show_card():
+            self.client.send("DISPROVE_RESPONSE", card=choice.get())
+            self.log_message(f"You showed {choice.get()} to {suggester}.")
+            self.disprove_dialog = None
+            dialog.destroy()
+
+        ttk.Button(dialog, text="Show Card", command=show_card).pack(pady=12)
 
     def create_board(self):
         rows, cols = len(self.MANSION_MAP), len(self.MANSION_MAP[0])

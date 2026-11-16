@@ -10,6 +10,8 @@ class Game:
         # positions of characters no player controls; a played character's position
         # lives on its Player, so every character's location is stored exactly once
         self.unplayed_locations = {}
+        # the suggestion waiting on a player to show a card, or None
+        self.pending_disproof = None
 
     def add_player(self, player):
         if len(self.players) >= rules.MAX_PLAYERS:
@@ -123,6 +125,43 @@ class Game:
             self.unplayed_locations[suspect] = room
 
         return True, ""
+
+    def start_disproof(self, suggester, suspect, weapon, room):
+        """Ask players in turn order, starting after the suggester, until one holds a
+        matching card. Eliminated players still disprove. Returns (disprover, matching
+        cards), or (None, []) when nobody can disprove."""
+        order = [player.player_id for player in self.players]
+        for player_id in rules.disproof_order(order, suggester.player_id):
+            player = self.get_player(player_id)
+            matches = rules.matching_cards(player.cards, suspect, weapon, room)
+            if matches:
+                self.pending_disproof = {
+                    "suggester_id": suggester.player_id,
+                    "disprover_id": player_id,
+                    "suspect": suspect,
+                    "weapon": weapon,
+                    "room": room,
+                    "cards": matches,
+                }
+                return player, matches
+        return None, []
+
+    def disprove_error(self, player, card):
+        pending = self.pending_disproof
+        if pending is None:
+            return "There is no suggestion to disprove."
+        if player.player_id != pending["disprover_id"]:
+            return "It is not your turn to disprove."
+        if card not in pending["cards"]:
+            return "Show one of your cards that matches the suggestion."
+        return None
+
+    def waiting_on_disproof_error(self):
+        """Error for any turn action taken while a suggestion is still being disproved."""
+        if self.pending_disproof is None:
+            return None
+        disprover = self.get_player(self.pending_disproof["disprover_id"])
+        return f"Waiting for {disprover.name} to disprove the suggestion."
 
     def next_turn(self):
         order = [player.player_id for player in self.players]

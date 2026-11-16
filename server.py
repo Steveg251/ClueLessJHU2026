@@ -193,6 +193,61 @@ async def suggestion(player_id, data):
         "state": game.public_state(),
     })
 
+    await start_disproof(player, suspect, weapon, player.location)
+
+
+async def start_disproof(suggester, suspect, weapon, room):
+    disprover, cards = game.start_disproof(suggester, suspect, weapon, room)
+    if disprover is None:
+        await broadcast("SUGGESTION_NOT_DISPROVED", {
+            "suggesterId": suggester.player_id,
+            "suspect": suspect,
+            "weapon": weapon,
+            "room": room,
+        })
+        return
+
+    # only the disprover learns which of their cards match; they choose one to show
+    await send_to(disprover.player_id, "DISPROVE_REQUEST", {
+        "suggesterId": suggester.player_id,
+        "suggesterName": suggester.name,
+        "suspect": suspect,
+        "weapon": weapon,
+        "room": room,
+        "cards": cards,
+    })
+
+
+async def disprove_response(player_id, data):
+    player = game.get_player(player_id)
+    if not player:
+        return
+
+    card = data.get("card")
+    error = game.disprove_error(player, card)
+    if error:
+        await send_error(player_id, error)
+        return
+
+    pending = game.pending_disproof
+    game.pending_disproof = None
+    suggester = game.get_player(pending["suggester_id"])
+
+    # the card itself goes only to the suggester
+    await send_to(suggester.player_id, "CARD_SHOWN", {
+        "card": card,
+        "disproverId": player.player_id,
+        "disproverName": player.name,
+    })
+    await broadcast("SUGGESTION_DISPROVED", {
+        "suggesterId": suggester.player_id,
+        "disproverId": player.player_id,
+        "disproverName": player.name,
+        "suspect": pending["suspect"],
+        "weapon": pending["weapon"],
+        "room": pending["room"],
+    })
+
 
 async def accusation(player_id, data):
     player = game.get_player(player_id)
@@ -269,6 +324,13 @@ async def process_message(websocket, raw_message):
         await websocket.send(create_message("ERROR", {"message": "Join the game first."}))
         return
 
+    # nothing else happens on the turn until the suggestion has been disproved
+    if message_type in ("MOVE_REQUEST", "SUGGESTION", "ACCUSATION", "END_TURN"):
+        error = game.waiting_on_disproof_error()
+        if error:
+            await send_error(player_id, error)
+            return
+
     if message_type == "SELECT_CHARACTER":
         await select_character(player_id, data)
     elif message_type == "START_GAME":
@@ -277,6 +339,8 @@ async def process_message(websocket, raw_message):
         await move_player(player_id, data)
     elif message_type == "SUGGESTION":
         await suggestion(player_id, data)
+    elif message_type == "DISPROVE_RESPONSE":
+        await disprove_response(player_id, data)
     elif message_type == "ACCUSATION":
         await accusation(player_id, data)
     elif message_type == "END_TURN":
