@@ -124,6 +124,10 @@ class Game:
         else:
             self.unplayed_locations[suspect] = room
 
+        # Being pulled into a room allows one suggestion there; once used, it's gone.
+        # (Cleared after the loop, so suggesting your own character doesn't grant it.)
+        player.moved_by_suggestion = False
+
         return True, ""
 
     def start_disproof(self, suggester, suspect, weapon, room):
@@ -178,6 +182,10 @@ class Game:
         )
         if next_index is None:
             return None
+
+        # A player pulled into a room may suggest there on their next turn only:
+        # if they didn't, the chance ends with that turn.
+        self.get_current_player().moved_by_suggestion = False
 
         self.current_player_index = next_index
         player = self.get_current_player()
