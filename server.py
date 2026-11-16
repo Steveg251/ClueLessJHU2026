@@ -1,155 +1,310 @@
 import asyncio
 import json
-import uuid
 import websockets
 
-from messages import make_message, parse_message
+import rules as rules
+from game import Game
+from player import Player
 
 HOST = "localhost"
 PORT = 8765
-MAX_PLAYERS = 6
 
-clients = {}       # websocket -> {id, name, is_host}
-game_started = False
-
-
-async def send(ws, message_type, **payload):
-    await ws.send(make_message(message_type, **payload))
+game = Game()
+connections = {}  # websocket -> player ID
+next_player_id = 1
 
 
-async def broadcast(message_type, exclude=None, **payload):
-    if not clients:
-        return
-    message = make_message(message_type, **payload)
-    targets = [ws for ws in clients if ws is not exclude]
-    if targets:
-        await asyncio.gather(*(ws.send(message) for ws in targets), return_exceptions=True)
+def create_message(message_type, data=None):
+    return json.dumps({"type": message_type, "data": data or {}})
 
 
-def lobby_snapshot():
-    return [
-        {"id": info["id"], "name": info["name"], "is_host": info["is_host"]}
-        for info in clients.values()
-    ]
-
-
-async def broadcast_lobby():
-    await broadcast("LOBBY_UPDATE", players=lobby_snapshot(), max_players=MAX_PLAYERS)
-
-
-async def route_message(ws, data):
-    global game_started
-    msg_type = data["type"]
-    info = clients[ws]
-
-    print(f"[SERVER] {info['name']} -> {msg_type}: {data}")
-
-    if msg_type == "START_GAME":
-        if not info["is_host"]:
-            await send(ws, "ERROR", message="Only the host can start the game.")
-            return
-        game_started = True
-        await broadcast("GAME_STARTED", players=lobby_snapshot())
-
-    elif msg_type == "MOVE_REQUEST":
-        # Skeletal increment: demonstrate routing, direct response, then broadcast.
-        # Full server-side Clue rule validation belongs in the minimal increment.
-        destination = data.get("destination")
-        await send(ws, "MOVE_RESPONSE", accepted=True, destination=destination)
-        await broadcast(
-            "GAME_UPDATE",
-            event="PLAYER_MOVED",
-            player_id=info["id"],
-            player_name=info["name"],
-            destination=destination,
-        )
-
-    elif msg_type == "SUGGESTION":
-        await broadcast(
-            "GAME_UPDATE",
-            event="SUGGESTION",
-            player_id=info["id"],
-            player_name=info["name"],
-            room=data.get("room"),
-        )
-
-    elif msg_type == "ACCUSATION":
-        await broadcast(
-            "GAME_UPDATE",
-            event="ACCUSATION",
-            player_id=info["id"],
-            player_name=info["name"],
-        )
-
-    elif msg_type == "END_TURN":
-        await broadcast(
-            "GAME_UPDATE",
-            event="END_TURN",
-            player_id=info["id"],
-            player_name=info["name"],
-        )
-
-    else:
-        await send(ws, "ERROR", message=f"Unknown message type: {msg_type}")
-
-
-async def handler(ws):
-    global game_started
-    try:
-        raw = await ws.recv()
-        hello = parse_message(raw)
-        if hello["type"] != "HELLO":
-            await send(ws, "ERROR", message="First message must be HELLO.")
-            await ws.close()
-            return
-
-        if len(clients) >= MAX_PLAYERS:
-            await send(ws, "ERROR", message="Lobby is full.")
-            await ws.close()
-            return
-
-        if game_started:
-            await send(ws, "ERROR", message="Game has already started.")
-            await ws.close()
-            return
-
-        player_id = str(uuid.uuid4())[:8]
-        name = str(hello.get("name") or f"Player {len(clients) + 1}")
-        is_host = len(clients) == 0
-        clients[ws] = {"id": player_id, "name": name, "is_host": is_host}
-
-        await send(ws, "WELCOME", player_id=player_id, name=name, is_host=is_host)
-        await broadcast("PLAYER_CONNECTED", player_id=player_id, player_name=name, exclude=ws)
-        await broadcast_lobby()
-        print(f"[SERVER] Connected: {name} ({player_id}) host={is_host}")
-
-        async for raw in ws:
+async def send_to(player_id, message_type, data=None):
+    for websocket, pid in list(connections.items()):
+        if pid == player_id:
             try:
-                data = parse_message(raw)
-                await route_message(ws, data)
-            except (json.JSONDecodeError, ValueError) as exc:
-                await send(ws, "ERROR", message=str(exc))
+                await websocket.send(create_message(message_type, data))
+            except websockets.ConnectionClosed:
+                pass
+            return
 
+
+async def broadcast(message_type, data=None):
+    if not connections:
+        return
+    message = create_message(message_type, data)
+    await asyncio.gather(
+        *[ws.send(message) for ws in list(connections)],
+        return_exceptions=True,
+    )
+
+
+async def send_error(player_id, message):
+    await send_to(player_id, "ERROR", {"message": message})
+
+
+async def send_lobby_update():
+    await broadcast("LOBBY_UPDATE", {
+        "players": [
+            {
+                "playerId": p.player_id,
+                "name": p.name,
+                "character": p.character,
+            }
+            for p in game.players
+        ]
+    })
+
+
+async def join_game(websocket, data):
+    global next_player_id
+
+    name = data.get("name") or data.get("playerName")
+    if not name:
+        await websocket.send(create_message("ERROR", {"message": "Player name required."}))
+        return
+    if game.started:
+        await websocket.send(create_message("ERROR", {"message": "Game already started."}))
+        return
+    if len(game.players) >= rules.MAX_PLAYERS:
+        await websocket.send(create_message("ERROR", {"message": "Game is full."}))
+        return
+
+    player = Player(next_player_id, name)
+    next_player_id += 1
+
+    # Updated requirement: host is always Miss Scarlet.
+    if not game.players:
+        player.character = "Miss Scarlet"
+
+    game.add_player(player)
+    connections[websocket] = player.player_id
+
+    await send_to(player.player_id, "WELCOME", {
+        "playerId": player.player_id,
+        "name": player.name,
+        "character": player.character,
+        "host": len(game.players) == 1,
+    })
+    await send_lobby_update()
+
+
+async def select_character(player_id, data):
+    player = game.get_player(player_id)
+    if not player:
+        return
+    if player == game.players[0]:
+        await send_error(player_id, "The host is Miss Scarlet.")
+        return
+
+    character = data.get("character")
+    if character not in rules.CHARACTERS:
+        await send_error(player_id, "Invalid character.")
+        return
+    if character == "Miss Scarlet":
+        await send_error(player_id, "Miss Scarlet belongs to the host.")
+        return
+    if game.character_taken(character):
+        await send_error(player_id, "Character already selected.")
+        return
+
+    player.character = character
+    await send_lobby_update()
+
+
+async def start_game(player_id):
+    if not game.players:
+        return
+    if player_id != game.players[0].player_id:
+        await send_error(player_id, "Only the host can start the game.")
+        return
+    if len(game.players) < rules.MIN_PLAYERS:
+        await send_error(player_id, f"At least {rules.MIN_PLAYERS} players are required.")
+        return
+
+    for player in game.players:
+        if player.character is None:
+            await send_error(player_id, f"{player.name} has not selected a character.")
+            return
+
+    game.initialize()
+
+    for player in game.players:
+        await send_to(player.player_id, "HAND", {"cards": player.cards})
+
+    await broadcast("GAME_STARTED", game.public_state())
+    current = game.get_current_player()
+    await broadcast("TURN_STARTED", {
+        "playerId": current.player_id,
+        "name": current.name,
+    })
+
+
+async def move_player(player_id, data):
+    player = game.get_player(player_id)
+    if not player:
+        return
+    if not game.started:
+        await send_error(player_id, "Game has not started.")
+        return
+    if game.get_current_player().player_id != player_id:
+        await send_error(player_id, "It is not your turn.")
+        return
+    if player.eliminated:
+        await send_error(player_id, "You have been eliminated.")
+        return
+
+    valid, error, old_location = game.move_player(player, data.get("destination"))
+    if not valid:
+        await send_error(player_id, error)
+        return
+
+    await broadcast("GAME_UPDATE", {
+        "event": "CHARACTER_MOVED",
+        "playerId": player.player_id,
+        "character": player.character,
+        "from": old_location,
+        "to": player.location,
+        "state": game.public_state(),
+    })
+
+
+async def suggestion(player_id, data):
+    player = game.get_player(player_id)
+    if not player:
+        return
+    if game.get_current_player().player_id != player_id:
+        await send_error(player_id, "It is not your turn.")
+        return
+
+    suspect = data.get("suspect")
+    weapon = data.get("weapon")
+    valid, error = game.make_suggestion(player, suspect, weapon)
+    if not valid:
+        await send_error(player_id, error)
+        return
+
+    await broadcast("GAME_UPDATE", {
+        "event": "SUGGESTION",
+        "playerId": player_id,
+        "suspect": suspect,
+        "weapon": weapon,
+        "room": player.location,
+        "state": game.public_state(),
+    })
+
+
+async def accusation(player_id, data):
+    player = game.get_player(player_id)
+    if not player:
+        return
+    if game.get_current_player().player_id != player_id:
+        await send_error(player_id, "It is not your turn.")
+        return
+
+    suspect = data.get("suspect")
+    weapon = data.get("weapon")
+    room = data.get("room")
+
+    error = rules.accusation_error(suspect, weapon, room)
+    if error:
+        await send_error(player_id, error)
+        return
+
+    if rules.accusation_is_correct(game.case_file, suspect, weapon, room):
+        await broadcast("GAME_WON", {
+            "playerId": player_id,
+            "name": player.name,
+        })
+    else:
+        player.eliminated = True
+        await broadcast("PLAYER_ELIMINATED", {
+            "playerId": player_id,
+            "name": player.name,
+        })
+
+
+async def end_turn(player_id):
+    player = game.get_player(player_id)
+    if not player:
+        return
+    if game.get_current_player().player_id != player_id:
+        await send_error(player_id, "It is not your turn.")
+        return
+
+    error = game.end_turn_error(player)
+    if error:
+        await send_error(player_id, error)
+        return
+
+    await broadcast("TURN_ENDED", {
+        "playerId": player.player_id,
+        "name": player.name,
+    })
+
+    next_player = game.next_turn()
+    if next_player:
+        await broadcast("TURN_STARTED", {
+            "playerId": next_player.player_id,
+            "name": next_player.name,
+        })
+
+
+async def process_message(websocket, raw_message):
+    try:
+        message = json.loads(raw_message)
+    except json.JSONDecodeError:
+        await websocket.send(create_message("ERROR", {"message": "Invalid JSON."}))
+        return
+
+    message_type = message.get("type")
+    data = message.get("data", {})
+    player_id = connections.get(websocket)
+
+    if message_type in ("HELLO", "JOIN_GAME"):
+        await join_game(websocket, data)
+        return
+
+    if player_id is None:
+        await websocket.send(create_message("ERROR", {"message": "Join the game first."}))
+        return
+
+    if message_type == "SELECT_CHARACTER":
+        await select_character(player_id, data)
+    elif message_type == "START_GAME":
+        await start_game(player_id)
+    elif message_type == "MOVE_REQUEST":
+        await move_player(player_id, data)
+    elif message_type == "SUGGESTION":
+        await suggestion(player_id, data)
+    elif message_type == "ACCUSATION":
+        await accusation(player_id, data)
+    elif message_type == "END_TURN":
+        await end_turn(player_id)
+    elif message_type == "GET_GAME_STATE":
+        await send_to(player_id, "GAME_STATE", game.public_state())
+    else:
+        await send_error(player_id, f"Unknown message: {message_type}")
+
+
+async def handle_client(websocket):
+    print("[SERVER] Client connected.")
+    try:
+        async for raw_message in websocket:
+            await process_message(websocket, raw_message)
     except websockets.ConnectionClosed:
         pass
     finally:
-        info = clients.pop(ws, None)
-        if info:
-            print(f"[SERVER] Disconnected: {info['name']}")
-            await broadcast("PLAYER_DISCONNECTED", player_id=info["id"], player_name=info["name"])
-            if clients:
-                # If the host leaves before the game starts, promote the oldest remaining client.
-                if info["is_host"] and not game_started:
-                    next_info = next(iter(clients.values()))
-                    next_info["is_host"] = True
-                await broadcast_lobby()
-            else:
-                game_started = False
+        player_id = connections.pop(websocket, None)
+        if player_id:
+            player = game.get_player(player_id)
+            if player:
+                print(f"[SERVER] {player.name} disconnected.")
 
 
 async def main():
-    print(f"Clue-Less server listening on ws://{HOST}:{PORT}")
-    async with websockets.serve(handler, HOST, PORT):
+    print("CLUE-LESS minimal server")
+    print(f"Listening on ws://{HOST}:{PORT}")
+    async with websockets.serve(handle_client, HOST, PORT):
         await asyncio.Future()
 
 

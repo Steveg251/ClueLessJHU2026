@@ -4,6 +4,8 @@ import tkinter as tk
 from tkinter import ttk
 from tkinter import messagebox
 
+import rules as rules
+
 # characters are given out in the order players joined, each starting in their Clue-Less hallway
 CHARACTERS = [
     {"character": "Miss Scarlet", "color": "#e53e3e", "location": "Hallway 2"},
@@ -269,15 +271,26 @@ class ClueGameGUI:
         if active_player["location"] not in self.rooms:
             messagebox.showinfo("Suggestion", "You must be inside a room to make a suggestion.")
             return
-        self.client.send("SUGGESTION", room=active_player["location"])
+        suspect = self.picks["Suspects"].get()
+        weapon = self.picks["Weapons"].get()
+        if not suspect or not weapon:
+            messagebox.showinfo("Suggestion", "You must select both a suspect and a weapon.")
+            return
+        self.client.send("SUGGESTION", room=active_player["location"], suspect=suspect, weapon=weapon) # Send the suggestion to the server
 
     def action_make_accusation(self):
         if not self.is_my_turn():
             self.log_message("It's not your turn.")
             return
+        suspect = self.picks["Suspects"].get()
+        weapon = self.picks["Weapons"].get()
+        room = self.picks["Rooms"].get()
+        if not suspect or not weapon or not room:
+            messagebox.showinfo("Accusation", "You must select a suspect, a weapon, and a room.")
+            return
         messagebox.showwarning("FINAL ACCUSATION",
                                "Be careful! An incorrect final accusation eliminates you from the game.")
-        self.client.send("ACCUSATION")
+        self.client.send("ACCUSATION", suspect=suspect, weapon=weapon, room=room)
 
     def on_space_click(self, space_name):
         if not self.is_my_turn():
@@ -394,10 +407,9 @@ class ClueGameGUI:
                 pawn.bind("<Button-1>", lambda event, name=loc: self.on_space_click(name))
 
     def create_notepad(self):
-        suspects = ["Miss Scarlet", "Col. Mustard", "Mrs. White", "Mr. Green", "Mrs. Peacock", "Prof. Plum"]
-        weapons = ["Candlestick", "Knife", "Lead Pipe", "Revolver", "Rope", "Wrench"]
-        rooms = ["Kitchen", "Ballroom", "Conservatory", "Dining Room", "Billiard Room",
-                 "Library", "Lounge", "Hall", "Study"]
+        suspects = rules.SUSPECTS
+        weapons = rules.WEAPONS
+        rooms = rules.ROOM_CARDS
 
         canvas = tk.Canvas(self.notepad_frame, borderwidth=0, highlightthickness=0)
         scrollbar = ttk.Scrollbar(self.notepad_frame, orient="vertical", command=canvas.yview)
@@ -419,7 +431,15 @@ class ClueGameGUI:
         canvas.bind("<Enter>", lambda e: canvas.bind_all("<MouseWheel>", _on_mousewheel))
         canvas.bind("<Leave>", lambda e: canvas.unbind_all("<MouseWheel>"))
 
-        self.notepad_vars = {}
+        self.notepad_vars = {} # the notepad for ruling out a card
+        # one pick per category (suspect, weapon, room)
+        self.picks = {
+            "Suspects": tk.StringVar(),
+            "Weapons": tk.StringVar(),
+            "Rooms": tk.StringVar(),
+        }
+        ttk.Label(scrollable_frame, text="Ruled out", foreground="#718096").grid(row=0, column=0, sticky="w", padx=10)
+        ttk.Label(scrollable_frame, text="Your Picks", foreground="#718096").grid(row=0, column=1, sticky="w", padx=10)
         current_row = 0
 
         def add_section(title, items):
@@ -432,6 +452,10 @@ class ClueGameGUI:
                 self.notepad_vars[item] = var
                 chk = ttk.Checkbutton(scrollable_frame, text=item, variable=var)
                 chk.grid(row=current_row, column=0, sticky="w", padx=10, pady=1)
+                # Add a radio button for the user's pick
+                pick_var = self.picks[title]
+                rdo = ttk.Radiobutton(scrollable_frame, text=item, variable=pick_var, value=item)
+                rdo.grid(row=current_row, column=1, sticky="w", padx=10, pady=1)
                 current_row += 1
 
         add_section("Suspects", suspects)
