@@ -86,6 +86,16 @@ class ClueGameGUI:
                 "location": player["location"],
                 "active": not player["eliminated"],
             })
+        # characters nobody plays: still drawn on the board, moved only by suggestions
+        self.unplayed = [
+            {
+                "character": info["character"],
+                "color": CHARACTER_COLORS.get(info["character"], "#a0aec0"),
+                "location": info["location"],
+            }
+            for info in game_state["characters"]
+            if info["playerId"] is None
+        ]
         self.current_turn_index = 0
         self.set_current_player(game_state["currentPlayerId"])
 
@@ -188,6 +198,23 @@ class ClueGameGUI:
             player["loc_widget"] = tk.Label(details_frame, text=f"Location: {player['location']}",
                                             font=("Arial", 8), fg="#4a5568", bg="#f7fafc", anchor="w")
             player["loc_widget"].pack(fill="x")
+
+        for token in self.unplayed:
+            p_card = tk.Frame(self.players_frame, bd=1, relief="groove", bg="#edf2f7")
+            p_card.pack(fill="x", pady=4, ipady=3)
+
+            canvas = tk.Canvas(p_card, width=14, height=14, bg="#edf2f7", highlightthickness=0)
+            canvas.pack(side="left", padx=6)
+            canvas.create_rectangle(1, 1, 13, 13, fill=token["color"], outline="#a0aec0")
+
+            details_frame = tk.Frame(p_card, bg="#edf2f7")
+            details_frame.pack(side="left", fill="both", expand=True)
+
+            tk.Label(details_frame, text=f"{token['character']} (not in play)",
+                     font=("Arial", 8), fg="#718096", bg="#edf2f7", anchor="w").pack(fill="x")
+            token["loc_widget"] = tk.Label(details_frame, text=f"Location: {token['location']}",
+                                           font=("Arial", 8), fg="#a0aec0", bg="#edf2f7", anchor="w")
+            token["loc_widget"].pack(fill="x")
 
     #Players panel
     def create_status_log(self):
@@ -320,6 +347,10 @@ class ClueGameGUI:
             if info["eliminated"] and player["active"]:
                 player["active"] = False
                 player["name_widget"].config(fg="#a0aec0")
+        locations = {info["character"]: info["location"] for info in state["characters"]}
+        for token in self.unplayed:
+            token["location"] = locations.get(token["character"], token["location"])
+            token["loc_widget"].config(text=f"Location: {token['location']}")
         self.update_character_tokens()
 
     def describe(self, player):
@@ -419,7 +450,7 @@ class ClueGameGUI:
             for child in token_area.winfo_children():
                 child.destroy()
 
-        for player in self.players_data:
+        for player in self.players_data + self.unplayed:
             loc = player["location"]
             if loc in self.board_tiles:
                 parent_area = self.board_tiles[loc]

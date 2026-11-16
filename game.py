@@ -7,6 +7,9 @@ class Game:
         self.started = False
         self.current_player_index = 0
         self.case_file = None
+        # positions of characters no player controls; a played character's position
+        # lives on its Player, so every character's location is stored exactly once
+        self.unplayed_locations = {}
 
     def add_player(self, player):
         if len(self.players) >= rules.MAX_PLAYERS:
@@ -38,11 +41,25 @@ class Game:
             player.location = starts[player.character]
             player.moved_by_suggestion = False
 
+        played = {player.character for player in self.players}
+        self.unplayed_locations = {character: location
+                                   for character, location in starts.items()
+                                   if character not in played}
+
         self.started = True
         self.current_player_index = 0
         self.get_current_player().reset_turn(rules.HALLWAYS)
 
+    def character_locations(self):
+        """Location of all six characters, played or not."""
+        locations = dict(self.unplayed_locations)
+        for player in self.players:
+            if player.character is not None:
+                locations[player.character] = player.location
+        return locations
+
     def occupied_hallways(self, exclude_player=None):
+        # only players' pawns block hallways; unplayed characters never do
         return {
             player.location
             for player in self.players
@@ -96,12 +113,14 @@ class Game:
         player.has_suggested = True
         room = player.location
 
-        # Move the suggested character into the current room.
+        # Move the suggested character into the current room, whether or not anyone plays them.
         for other in self.players:
             if other.character == suspect:
                 other.location = room
                 other.moved_by_suggestion = True
                 break
+        else:
+            self.unplayed_locations[suspect] = room
 
         return True, ""
 
@@ -132,4 +151,18 @@ class Game:
             "started": self.started,
             "currentPlayerId": current.player_id if current else None,
             "players": [player.public_data() for player in self.players],
+            # all six characters in card order; playerId is None for an unplayed one
+            "characters": self.public_characters(),
         }
+
+    def public_characters(self):
+        controllers = {player.character: player.player_id for player in self.players}
+        locations = self.character_locations()
+        return [
+            {
+                "character": character,
+                "location": locations.get(character),
+                "playerId": controllers.get(character),
+            }
+            for character in rules.CHARACTERS
+        ]
