@@ -1,5 +1,6 @@
 import asyncio
 import json
+import sys
 import websockets
 
 import rules as rules
@@ -7,7 +8,9 @@ from game import Game
 from messages import make_message, parse_message
 from player import Player
 
-HOST = "localhost"
+# Run with: python3 server.py                 only players on this computer can join
+#           python3 server.py <Tailscale IP>  players on your tailnet can join too
+HOST = sys.argv[1] if len(sys.argv) > 1 else "localhost"
 PORT = 8765
 
 game = Game()
@@ -428,6 +431,10 @@ async def leave_lobby(player):
 async def main():
     print("CLUE-LESS minimal server")
     print(f"Listening on ws://{HOST}:{PORT}")
+    if HOST == "localhost":
+        print("Players on this computer join with:  python3 lobby.py <your name>")
+    else:
+        print(f"Players join with:  python3 lobby.py <your name> {HOST}")
     async with websockets.serve(handle_client, HOST, PORT):
         await asyncio.Future()
 

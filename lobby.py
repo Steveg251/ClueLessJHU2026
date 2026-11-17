@@ -1,5 +1,5 @@
 #Start button and lobby system for Clue-Less
-# Run with: python3 lobby.py <player name> <server's Tailscale IP>   (start server.py first)
+# Run with: python3 lobby.py <player name> <server's Tailscale IP>   (start server.py first; see README.md)
 #   same computer as the server:  python3 lobby.py Scarlet
 #   different computer:           python3 lobby.py Mustard 100.64.1.5
 # server.py prints the exact command to use when it starts
